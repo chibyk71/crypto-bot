@@ -29,6 +29,7 @@
 		"@tailwindcss/typography": "^0.5.15",
 		"@tailwindcss/vite": "^4.0.0",
 		"@types/node": "^22",
+		"@types/node-telegram-bot-api": "^0.64.10",
 		"@vitest/browser": "^3.2.3",
 		"bits-ui": "^2.9.4",
 		"clsx": "^2.1.1",

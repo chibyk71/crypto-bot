@@ -31,17 +31,21 @@
 		{ value: 'crosses_above_ema200', label: 'Crosses Above EMA200' },
 		{ value: 'crosses_below_ema200', label: 'Crosses Below EMA200' }
 	];
+
+    const condition = $derived(
+        conditions.find((f) => f.value === $formData.condition)?.label ?? "Select a fruit"
+    );
 </script>
 
 <div class="mx-auto max-w-md space-y-6">
 	<h2 class="text-2xl font-bold">Set New Alert</h2>
 	<form method="POST" use:enhance class="space-y-4">
-        <FormField name="symbol" {form}>
+        <FormField name="symbol" {form} class=''>
             <FormControl>
                 {#snippet children({props})}
                     <Label for="symbol">Symbol</Label>
                     <Select bind:value={$formData.symbol} name="symbol" type='single'>
-                        <SelectTrigger {...props}>{$formData.symbol? $formData.symbol : 'Select Symbol'}</SelectTrigger>
+                        <SelectTrigger class='w-full' {...props}>{$formData.symbol? $formData.symbol : 'Select Symbol'}</SelectTrigger>
                         <SelectContent>
                             {#each clientConfig.symbols as sym}
                                 <SelectItem value={sym}>{sym}</SelectItem>
@@ -57,8 +61,8 @@
                 {#snippet children({ props })}
                     <Label for="condition">Condition</Label>
                     <Select bind:value={$formData.condition} name="condition" type='single'>
-                        <SelectTrigger {...props}>
-                            {$formData.condition ? $formData.condition: 'Select Condition'}
+                        <SelectTrigger class='w-full' {...props}>
+                            {condition}
                         </SelectTrigger>
                         <SelectContent>
                             {#each conditions as cond}
@@ -82,7 +86,7 @@
             <FormControl>
                 {#snippet children({ props })}
                     <Label>Note (Optional)</Label>
-                    <Textarea {...props} bind:value={$formData.targetPrice} />
+                    <Textarea {...props} bind:value={$formData.note} />
                 {/snippet}
             </FormControl>
             <FormFieldErrors />
