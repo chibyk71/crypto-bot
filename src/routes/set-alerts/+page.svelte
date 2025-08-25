@@ -7,7 +7,7 @@
 		SelectItem,
 		SelectTrigger
 	} from '$lib/components/ui/select';
-	import { config } from '$lib/config/settings';
+	import { clientConfig } from '$lib/config/settings';
 
 	import { alertSchema, type AlertSchema } from '$lib/config/schema';
 	import { type SuperValidated, type Infer, superForm } from 'sveltekit-superforms';
@@ -43,7 +43,7 @@
                     <Select bind:value={$formData.symbol} name="symbol" type='single'>
                         <SelectTrigger {...props}>{$formData.symbol? $formData.symbol : 'Select Symbol'}</SelectTrigger>
                         <SelectContent>
-                            {#each config.symbols as sym}
+                            {#each clientConfig.symbols as sym}
                                 <SelectItem value={sym}>{sym}</SelectItem>
                             {/each}
                         </SelectContent>
