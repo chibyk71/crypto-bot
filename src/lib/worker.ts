@@ -5,6 +5,19 @@ import { dbService } from '$lib/server/db';
 import { clientConfig } from './config/settings';
 import { TelegramService } from './services/telegram';
 
+/**
+ * Starts the worker which runs every 5 minutes, checks the current price and
+ * signals for each symbol in clientConfig.symbols, and sends a Telegram message
+ * if an alert is triggered.
+ *
+ * The worker will match the alert condition to the signal and update the alert
+ * status in the database to 'triggered' if the condition is satisfied.
+ *
+ * The Telegram message will include the symbol, condition, signal, price, ROI
+ * estimate, and any note associated with the alert.
+ *
+ * @returns {Promise<void>}
+ */
 export async function startWorker(): Promise<void> {
     const exchange = new ExchangeService();
     const strategy = new Strategy(3);
@@ -13,21 +26,25 @@ export async function startWorker(): Promise<void> {
     await exchange.initialize(clientConfig.symbols);
     console.log(`[Worker] Exchange initialized for:`, clientConfig.symbols);
 
+    // Schedule the worker to run every 5 minutes
     cron.schedule('*/5 * * * *', async () => {
         const scanStart = new Date();
         console.log(`[Worker] Scan started at ${scanStart.toISOString()}`);
 
         try {
+            // Iterate over each symbol in clientConfig.symbols
             for (const symbol of clientConfig.symbols) {
                 const ohlcv = exchange.getOHLCV(symbol);
                 if (!ohlcv || ohlcv.length < 50) continue;
 
+                // Extract the highs, lows, closes, and volumes from the OHLCV data
                 const highs = ohlcv.map(c => Number(c[2]));
                 const lows = ohlcv.map(c => Number(c[3]));
                 const closes = ohlcv.map(c => Number(c[4]));
                 const volumes = ohlcv.map(c => Number(c[5]));
                 const price = closes.at(-1)!;
 
+                // Generate a signal for the current symbol
                 const signal = strategy.generateSignal({
                     symbol,
                     highs,
@@ -39,6 +56,7 @@ export async function startWorker(): Promise<void> {
                 // Fetch active alerts for this symbol
                 const alerts = await dbService.getAlertsBySymbol(symbol);
 
+                // Iterate over each alert and check if the condition is satisfied
                 for (const alert of alerts) {
                     let triggered = false;
                     let triggerReason = '';
