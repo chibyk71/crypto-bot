@@ -60,9 +60,5 @@ services:
         value: 10
       - key: PUBLIC_POLL_INTERVAL
         value: 300000
-    disk:
-      name: data
-      mountPath: /render/data
-      sizeGB: 1
     healthCheckPath: /api/health
     autoDeploy: true
