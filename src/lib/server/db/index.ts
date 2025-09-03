@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/libsql';
-import { createClient } from '@libsql/client';
+import { createClient, type Client } from '@libsql/client';
 import * as schema from './schema';
 import { env } from '$env/dynamic/private';
 import { type Alert, type NewAlert, alert as alerts } from '$lib/server/db/schema';
@@ -9,9 +9,38 @@ import { eq } from 'drizzle-orm';
 
 if (!env.DATABASE_URL) throw new Error('DATABASE_URL is not set');
 
-const client = createClient({ url: env.DATABASE_URL });
+let client: Client | null = createClient({ url: env.DATABASE_URL });
 
 export const db = drizzle(client, { schema });
+
+
+async function initializeClient() {
+    const maxRetries = 3;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            client = createClient({ url: env.DATABASE_URL });
+            await client.execute('SELECT 1'); // Test connection
+            return;
+        } catch (err) {
+            console.error(`Database connection attempt ${i + 1} failed:`, err);
+            if (i === maxRetries - 1) throw new Error('Failed to connect to database');
+            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        }
+    }
+}
+
+export async function closeDb() {
+    if (client) {
+        client.close();
+        client = null;
+    }
+}
+
+// Initialize client on import
+initializeClient().catch(err => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+});
 
 // Query functions
 export const dbService = {

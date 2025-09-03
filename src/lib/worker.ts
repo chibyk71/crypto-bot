@@ -4,17 +4,57 @@ import { Strategy } from './strategy';
 import { dbService } from '$lib/server/db';
 import { clientConfig } from './config/settings';
 import { TelegramService } from './services/telegram';
+import * as fs from 'fs/promises';
+import { createLogger, format, transports } from 'winston';
+
+// Initialize structured logging
+const logger = createLogger({
+    level: 'info',
+    format: format.combine(
+        format.timestamp(),
+        format.json()
+    ),
+    transports: [
+        new transports.File({ filename: 'logs/worker.log' }),
+        new transports.Console()
+    ]
+});
+
+const LOCK_FILE = './worker.lock';
+let isRunning = false;
+
+/**
+ * Acquires a lock to prevent overlapping cron jobs.
+ * @returns {Promise<boolean>} True if the lock was acquired, false if already locked.
+ */
+async function acquireLock(): Promise<boolean> {
+    try {
+        await fs.writeFile(LOCK_FILE, process.pid.toString(), { flag: 'wx' });
+        return true;
+    } catch (err) {
+        logger.warn('Failed to acquire lock, another scan may be running');
+        return false;
+    }
+}
+
+/**
+ * Releases the lock file.
+ */
+async function releaseLock(): Promise<void> {
+    try {
+        await fs.unlink(LOCK_FILE);
+    } catch (err) {
+        logger.warn('Failed to release lock:', err);
+    }
+}
 
 /**
  * Starts the worker which runs every 5 minutes, checks the current price and
  * signals for each symbol in clientConfig.symbols, and sends a Telegram message
  * if an alert is triggered.
  *
- * The worker will match the alert condition to the signal and update the alert
- * status in the database to 'triggered' if the condition is satisfied.
- *
- * The Telegram message will include the symbol, condition, signal, price, ROI
- * estimate, and any note associated with the alert.
+ * The worker ensures no overlapping scans, handles graceful shutdown, and logs
+ * structured data for monitoring.
  *
  * @returns {Promise<void>}
  */
@@ -23,25 +63,55 @@ export async function startWorker(): Promise<void> {
     const strategy = new Strategy(3);
     const telegram = new TelegramService();
 
-    await exchange.initialize(clientConfig.symbols);
-    console.log(`[Worker] Exchange initialized for:`, clientConfig.symbols);
+    try {
+        await exchange.initialize(clientConfig.symbols);
+        logger.info('Exchange initialized', { symbols: clientConfig.symbols });
+    } catch (err) {
+        logger.error('Failed to initialize exchange', { error: err });
+        throw err;
+    }
+
+    // Handle graceful shutdown
+    const cleanup = async () => {
+        logger.info('Shutting down worker');
+        isRunning = false;
+        exchange.stopAll();
+        await releaseLock();
+        process.exit(0);
+    };
+
+    process.on('SIGTERM', cleanup);
+    process.on('SIGINT', cleanup);
 
     // Schedule the worker to run every 5 minutes
     cron.schedule('*/5 * * * *', async () => {
+        if (isRunning || !(await acquireLock())) {
+            logger.warn('Scan skipped: another scan is running or lock acquisition failed');
+            return;
+        }
+
+        isRunning = true;
         const scanStart = new Date();
-        console.log(`[Worker] Scan started at ${scanStart.toISOString()}`);
+        logger.info('Scan started', { timestamp: scanStart.toISOString() });
 
         try {
-            // Iterate over each symbol in clientConfig.symbols
             for (const symbol of clientConfig.symbols) {
                 const ohlcv = exchange.getOHLCV(symbol);
-                if (!ohlcv || ohlcv.length < 50) continue;
+                if (!ohlcv || ohlcv.length < 50) {
+                    logger.warn('Insufficient OHLCV data', { symbol, ohlcvLength: ohlcv?.length || 0 });
+                    continue;
+                }
 
-                // Extract the highs, lows, closes, and volumes from the OHLCV data
-                const highs = ohlcv.map(c => Number(c[2]));
-                const lows = ohlcv.map(c => Number(c[3]));
-                const closes = ohlcv.map(c => Number(c[4]));
-                const volumes = ohlcv.map(c => Number(c[5]));
+                // Validate OHLCV data
+                const highs = ohlcv.map(c => Number(c[2])).filter(v => !isNaN(v));
+                const lows = ohlcv.map(c => Number(c[3])).filter(v => !isNaN(v));
+                const closes = ohlcv.map(c => Number(c[4])).filter(v => !isNaN(v));
+                const volumes = ohlcv.map(c => Number(c[5])).filter(v => !isNaN(v));
+                if (closes.length < 50) {
+                    logger.warn('Invalid OHLCV data after filtering', { symbol, closesLength: closes.length });
+                    continue;
+                }
+
                 const price = closes.at(-1)!;
 
                 // Generate a signal for the current symbol
@@ -61,7 +131,7 @@ export async function startWorker(): Promise<void> {
                     let triggered = false;
                     let triggerReason = '';
 
-                    // Example: match alert condition to signal
+                    // Match alert condition to signal
                     if (
                         (alert.condition === 'price >' && price > alert.targetPrice) ||
                         (alert.condition === 'price <' && price < alert.targetPrice) ||
@@ -78,22 +148,32 @@ export async function startWorker(): Promise<void> {
                             `🔔 Alert Triggered: ${symbol}`,
                             `• Condition: ${triggerReason}`,
                             `• Signal: ${signal.signal.toUpperCase()}`,
-                            `• Price: $${price}`,
+                            `• Price: $${price.toFixed(4)}`,
                             `• Indicators: ${signal.reason.join(', ')}`,
                             `• ROI Est: ${strategy.lastAtr ? ((3 * strategy.lastAtr / price) * 100).toFixed(2) + '%' : 'N/A'}`,
                             alert.note ? `• Note: ${alert.note}` : ''
                         ].filter(Boolean).join('\n');
-                        await telegram.sendMessage(msg);
+
+                        try {
+                            await telegram.sendMessage(msg);
+                            logger.info('Alert sent', { symbol, alertId: alert.id, message: msg });
+                        } catch (err) {
+                            logger.error('Failed to send Telegram message', { symbol, alertId: alert.id, error: err });
+                        }
                     }
+
+                    logger.info('Alert checked', { symbol, alertId: alert.id, triggered });
                 }
             }
         } catch (err) {
-            console.error('[Worker] Error during scan:', err);
+            logger.error('Error during scan', { error: err });
+        } finally {
+            isRunning = false;
+            await releaseLock();
+            const scanEnd = new Date();
+            logger.info('Scan finished', { timestamp: scanEnd.toISOString(), durationMs: scanEnd.getTime() - scanStart.getTime() });
         }
-
-        const scanEnd = new Date();
-        console.log(`[Worker] Scan finished at ${scanEnd.toISOString()}`);
     });
 
-    console.log('[Worker] Started. Monitoring:', clientConfig.symbols);
+    logger.info('Worker started', { symbols: clientConfig.symbols });
 }

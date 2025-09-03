@@ -1,6 +1,7 @@
 import { clientConfig } from '$lib/config/settings';
 import { serverConfig } from '$lib/server/config/settings';
 import ccxt, { type OHLCV, Exchange } from 'ccxt';
+import { TelegramService } from './telegram';
 
 export class ExchangeService {
     private exchange: Exchange;
@@ -17,6 +18,7 @@ export class ExchangeService {
             apiKey: serverConfig.bybit.apiKey,
             secret: serverConfig.bybit.apiSecret,
             enableRateLimit: true,
+            timeout: 30000,
         });
     }
 
@@ -44,7 +46,10 @@ export class ExchangeService {
      * Starts polling for the given symbol at the configured polling interval.
      * @param symbol the symbol to start polling for
      */
-    private startPolling(symbol: string): void {
+    private async startPolling(symbol: string): Promise<void> {
+        const maxRetries = 3;
+        let retryCount = 0;
+
         const interval = setInterval(async () => {
             try {
                 const newData = await this.exchange.fetchOHLCV(
@@ -55,14 +60,18 @@ export class ExchangeService {
                 );
                 this.ohlcvData[symbol] = newData;
                 console.log(`[${symbol}] Updated OHLCV, latest close: ${newData[newData.length - 1][4]}`);
+                retryCount = 0; // Reset retries on success
             } catch (error) {
-                if (error instanceof Error) {
-                    console.error(`[${symbol}] Error fetching OHLCV:`, error.message);
-                } else {
-                    console.error(`[${symbol}] Error fetching OHLCV:`, error);
+                retryCount++;
+                console.error(`[${symbol}] Error fetching OHLCV (attempt ${retryCount}/${maxRetries}):`, error);
+                if (retryCount >= maxRetries) {
+                    console.error(`[${symbol}] Max retries reached, stopping polling`);
+                    this.stopPolling(symbol);
+                    // Notify via Telegram
+                    new TelegramService().sendMessage(`⚠️ ${symbol} polling stopped after ${maxRetries} failures`);
                 }
             }
-        }, clientConfig.pollingInterval || 5000); // Default to 5s polling if not set
+        }, clientConfig.pollingInterval || 5000);
 
         this.pollingIntervals[symbol] = interval;
     }
